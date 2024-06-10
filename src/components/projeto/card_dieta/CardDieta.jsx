@@ -24,8 +24,10 @@ const CardDieta = ({ onNutrientTotalsUpdate, onCurrentNutrientUpdate }) => {
   const [loading, setLoading] = useState(false);
   const [cardsData, setCardsData] = useState([]);
   const [selectedCard, setSelectedCard] = useState(null);
-  const [showSelectModal, setShowSelectModal] = useState(true);
-  const [qtdCards, setQtdCards] = useState(0);
+  const [showSelectModal, setShowSelectModal] = useState(false);
+  const [qtdCards, setQtdCards] = useState(() => {
+    return localStorage.getItem('qtdCards') ? Number(localStorage.getItem('qtdCards')) : 0;
+  });
   const [error, setError] = useState(null);
 
   const [user, setUser] = useState({
@@ -43,7 +45,6 @@ const CardDieta = ({ onNutrientTotalsUpdate, onCurrentNutrientUpdate }) => {
     }
   });
 
-  // dados do usuario
   useEffect(() => {
     const fetchData = async () => {
       try {
@@ -53,7 +54,6 @@ const CardDieta = ({ onNutrientTotalsUpdate, onCurrentNutrientUpdate }) => {
       } catch (error) {
         toast.error(error.message);
       }
-
     };
 
     fetchData();
@@ -69,76 +69,77 @@ const CardDieta = ({ onNutrientTotalsUpdate, onCurrentNutrientUpdate }) => {
     { id: 5, horario: "Ceia - 22:00 PM", img: img5 },
   ], []);
 
+  const fetchExistingReceitas = async () => {
+    try {
+      const id = getId();
+      const response = await api.get(`/openai/${id}`);
+      return response.data;
+    } catch (error) {
+      throw new Error("Erro ao buscar receitas existentes: " + error.message);
+    }
+  };
+
+  const createNewReceitas = async () => {
+    try {
+      const id = getId();
+      const response = await api.get(`/openai/gpt3/${id}`, {
+        params: { objetivo: meta, qtdSelecionada: qtdCards },
+      });
+      return response.data;
+    } catch (error) {
+      throw new Error("Erro ao criar novas receitas: " + error.message);
+    }
+  };
+
   useEffect(() => {
     const fetchData = async () => {
+      setLoading(true);
       try {
-        setLoading(true);
-        const id = getId();
-        if (!id) {
-          throw new Error("ID não encontrado");
-        }
+        const existingReceitas = await fetchExistingReceitas();
 
-        const response = await api.get(`/openai/gpt3/${id}`, {
-          params: { objetivo: meta, qtdSelecionada: qtdCards },
-        });
+        if (existingReceitas && existingReceitas.length > 0) {
+          const numReceitas = Math.min(existingReceitas.length, qtdCards);
+          localStorage.setItem('qtdCards', numReceitas);
 
-        const apiData = response.data;
-
-        const updatedCardsData = predefinedCards
-          .slice(0, qtdCards)
-          .map((card, index) => ({
+          const updatedCardsData = predefinedCards.slice(0, numReceitas).map((card, index) => ({
             ...card,
-            titulo: apiData[index]?.nome || `Título ${index + 1}`,
-            descricao: apiData[index]?.modoPreparo || `Descrição ${index + 1}`,
-            carboidratos: Number(apiData[index]?.carboidratos) || 0,
-            calorias: Number(apiData[index]?.calorias) || 0,
-            gorduras: Number(apiData[index]?.gorduras) || 0,
-            proteinas: Number(apiData[index]?.proteina) || 0,
-            acucares: apiData[index]?.acucar,
-            tempoPreparo: apiData[index]?.tempoPreparo,
-            ingredientes: apiData[index]?.ingredientes,
+            titulo: existingReceitas[index].nome,
+            descricao: existingReceitas[index].modoPreparo,
+            carboidratos: Number(existingReceitas[index].carboidratos),
+            calorias: Number(existingReceitas[index].calorias),
+            gorduras: Number(existingReceitas[index].gorduras),
+            proteinas: Number(existingReceitas[index].proteina),
+            acucares: existingReceitas[index].acucar,
+            tempoPreparo: existingReceitas[index].tempoPreparo,
+            ingredientes: existingReceitas[index].ingredientes,
           }));
 
-        setCardsData(updatedCardsData);
-        sessionStorage.setItem("cardsData", JSON.stringify(updatedCardsData));
+          setCardsData(updatedCardsData);
+          setShowSelectModal(false);
 
-        const totalNutrients = updatedCardsData.reduce(
-          (totals, card) => {
-            return {
+          const totalNutrients = updatedCardsData.reduce(
+            (totals, card) => ({
               carboidratos: totals.carboidratos + card.carboidratos,
               calorias: totals.calorias + card.calorias,
               gorduras: totals.gorduras + card.gorduras,
               proteinas: totals.proteinas + card.proteinas,
-            };
-          },
-          { carboidratos: 0, calorias: 0, gorduras: 0, proteinas: 0 }
-        );
+            }),
+            { carboidratos: 0, calorias: 0, gorduras: 0, proteinas: 0 }
+          );
 
-        sessionStorage.setItem("totalNutrients", JSON.stringify(totalNutrients));
-        onNutrientTotalsUpdate(totalNutrients);
+          onNutrientTotalsUpdate(totalNutrients);
+        } else {
+          setShowSelectModal(true);
+        }
       } catch (error) {
-        console.error("Erro na requisição:", error);
         setError(error.message);
       } finally {
         setLoading(false);
       }
     };
 
-    const storedCardsData = sessionStorage.getItem("cardsData");
-    const storedTotalNutrients = sessionStorage.getItem("totalNutrients");
-
-    if (storedCardsData && storedTotalNutrients) {
-      const parsedCardsData = JSON.parse(storedCardsData);
-      const parsedTotalNutrients = JSON.parse(storedTotalNutrients);
-      setCardsData(parsedCardsData);
-      setShowSelectModal(false);
-      onNutrientTotalsUpdate(parsedTotalNutrients);
-    } else {
-      if (!showSelectModal) {
-        fetchData();
-      }
-    }
-  }, [qtdCards, showSelectModal, onNutrientTotalsUpdate, meta, predefinedCards]);
+    fetchData();
+  }, [onNutrientTotalsUpdate, meta, predefinedCards, qtdCards]);
 
   const handleGreenButtonClick = (card) => {
     setSelectedCard(card);
@@ -149,35 +150,63 @@ const CardDieta = ({ onNutrientTotalsUpdate, onCurrentNutrientUpdate }) => {
     const completedCard = cardsData.find((card) => card.id === id);
 
     if (completedCard) {
-      onCurrentNutrientUpdate((prevTotals) => {
-        const newTotals = {
-          carboidratos: prevTotals.carboidratos + completedCard.carboidratos,
-          calorias: prevTotals.calorias + completedCard.calorias,
-          gorduras: prevTotals.gorduras + completedCard.gorduras,
-          proteinas: prevTotals.proteinas + completedCard.proteinas,
-        };
-        sessionStorage.setItem("currentNutrientTotals", JSON.stringify(newTotals));
-        return newTotals;
-      });
+      onCurrentNutrientUpdate((prevTotals) => ({
+        carboidratos: prevTotals.carboidratos + completedCard.carboidratos,
+        calorias: prevTotals.calorias + completedCard.calorias,
+        gorduras: prevTotals.gorduras + completedCard.gorduras,
+        proteinas: prevTotals.proteinas + completedCard.proteinas,
+      }));
     }
 
     setCardsData(updatedCards);
-    sessionStorage.setItem("cardsData", JSON.stringify(updatedCards));
   };
 
   const closeModal = () => {
     setSelectedCard(null);
   };
 
-
-
   const [checkedItems, setCheckedItems] = useState([]);
 
-  const handleStartClick = () => {
+  const handleStartClick = async () => {
     if (qtdCards === 0) {
       toast.warning("Selecione alguma opção");
     } else {
-      setShowSelectModal(false);
+      try {
+        setLoading(true);
+        const newReceitas = await createNewReceitas();
+        const updatedCardsData = predefinedCards.slice(0, qtdCards).map((card, index) => ({
+          ...card,
+          titulo: newReceitas[index]?.nome || `Título ${index + 1}`,
+          descricao: newReceitas[index]?.modoPreparo || `Descrição ${index + 1}`,
+          carboidratos: Number(newReceitas[index]?.carboidratos) || 0,
+          calorias: Number(newReceitas[index]?.calorias) || 0,
+          gorduras: Number(newReceitas[index]?.gorduras) || 0,
+          proteinas: Number(newReceitas[index]?.proteina) || 0,
+          acucares: newReceitas[index]?.acucar,
+          tempoPreparo: newReceitas[index]?.tempoPreparo,
+          ingredientes: newReceitas[index]?.ingredientes,
+        }));
+
+        setCardsData(updatedCardsData);
+        setShowSelectModal(false);
+        localStorage.setItem('qtdCards', qtdCards);
+
+        const totalNutrients = updatedCardsData.reduce(
+          (totals, card) => ({
+            carboidratos: totals.carboidratos + card.carboidratos,
+            calorias: totals.calorias + card.calorias,
+            gorduras: totals.gorduras + card.gorduras,
+            proteinas: totals.proteinas + card.proteinas,
+          }),
+          { carboidratos: 0, calorias: 0, gorduras: 0, proteinas: 0 }
+        );
+
+        onNutrientTotalsUpdate(totalNutrients);
+      } catch (error) {
+        setError(error.message);
+      } finally {
+        setLoading(false);
+      }
     }
   };
 
@@ -190,13 +219,14 @@ const CardDieta = ({ onNutrientTotalsUpdate, onCurrentNutrientUpdate }) => {
       setQtdCards(value);
     }
   };
+
   return (
     <div className={styles.cards_listener}>
-      {showSelectModal && !sessionStorage.getItem("cardsData") && (
-        <Modal open={true}>
+      {showSelectModal && (
+        <Modal open={showSelectModal}>
           <ModalDialog sx={{ background: "var(--preto-secundario)" }}>
+            <form onSubmit={(e) => e.preventDefault()}>
             <DialogTitle style={{ color: "white" }}>Criando sua dieta Diária personalizada.</DialogTitle>
-            <form>
               <Box>
                 <Typography id="topping" level="body-sm" fontWeight="500" fontSize={"18px"} mb={2}>
                   Selecione a quantidade de refeições que você fará (APENAS 1 OPÇÃO)
@@ -237,6 +267,7 @@ const CardDieta = ({ onNutrientTotalsUpdate, onCurrentNutrientUpdate }) => {
           </ModalDialog>
         </Modal>
       )}
+
       {loading && (
         <Modal open={true}>
           <ModalDialog sx={{ background: "var(--preto-secundario)" }}>
@@ -255,6 +286,7 @@ const CardDieta = ({ onNutrientTotalsUpdate, onCurrentNutrientUpdate }) => {
           Sem mais refeições por enquanto! Volte amanhã 😊
         </div>
       )}
+
       {cardsData.map((card) => (
         <div key={card.id} className={styles.card_container}>
           <div className={styles.horario}>{card.horario}</div>
